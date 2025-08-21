@@ -1,23 +1,44 @@
 import os
 import requests
+import json
 from datetime import datetime, timedelta
 from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel
 from typing import Optional
+from pydantic import BaseModel
 
+class TopicRequest(BaseModel):
+    topic: str
+    days_back: int = 3  # Optional with default value
+
+
+app = FastAPI()
+
+# Your existing endpoints
+@app.get("/")
+def read_root():
+    return {"message": "Hello World"}
+
+@app.post("/predict")
+def predict(input_data: str):
+    return {"prediction": input_data}
+
+# ======== NEW NEWS SUMMARIZATION ENDPOINTS ========
+
+# Request model for news summarization
 class NewsRequest(BaseModel):
     topic: str
     days_back: Optional[int] = 3
     max_articles: Optional[int] = 5
 
+# Response model
 class NewsResponse(BaseModel):
     status: str
     summary: str
     articles_found: int
     topic: str
 
-app = FastAPI()
-
+# Set up API keys
 SERPER_API_KEY = "994cc60dc5f8832509cd540db1c3e00c6df41a99"
 
 def search_news(query, days_back=7):
@@ -66,14 +87,7 @@ Found {len(articles)} recent articles about {topic}.
     
     return analysis
 
-@app.get("/")
-def read_root():
-    return {"message": "Hello World"}
-
-@app.post("/predict")
-def predict(input_data: str):
-    return {"prediction": input_data}
-
+# NEW ENDPOINT: News Summarization
 @app.post("/summarize-news", response_model=NewsResponse)
 async def summarize_news(request: NewsRequest):
     """Generate news summary for a given topic"""
@@ -94,7 +108,7 @@ async def summarize_news(request: NewsRequest):
             }
             articles.append(article)
         
-        # Generate summary using manual analysis
+        # Generate summary using manual analysis (since OpenAI key needs fix)
         summary = manual_analysis(articles, request.topic)
         
         return NewsResponse(
@@ -107,6 +121,7 @@ async def summarize_news(request: NewsRequest):
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Processing error: {str(e)}")
 
+# NEW ENDPOINT: Quick news search
 @app.get("/search-news/{topic}")
 async def search_news_endpoint(topic: str, days_back: int = 3):
     """Search for news articles only"""
@@ -135,6 +150,7 @@ async def search_news_endpoint(topic: str, days_back: int = 3):
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Search error: {str(e)}")
 
+# NEW ENDPOINT: Health check with news API status
 @app.get("/health")
 async def health_check():
     return {
@@ -147,3 +163,7 @@ async def health_check():
             "GET /health": "Health check"
         }
     }
+
+if __name__ == "__main__":
+    import uvicorn
+    uvicorn.run(app, host="0.0.0.0", port=8080)

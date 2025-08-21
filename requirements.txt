@@ -1,5 +1,6 @@
 fastapi==0.104.1
-uvicorn[standard]==0.24.0
+uvicorn==0.24.0
 requests==2.31.0
-pydantic==2.5.0
-python-multipart==0.0.6
+pydantic-core==2.14.0
+annotated-types==0.6.0
+typing-extensions==4.9.0
