@@ -5,12 +5,10 @@ from datetime import datetime, timedelta
 from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel
 from typing import Optional
-from pydantic import BaseModel
 
 class TopicRequest(BaseModel):
     topic: str
     days_back: int = 3  # Optional with default value
-
 
 app = FastAPI()
 
@@ -164,6 +162,7 @@ async def health_check():
         }
     }
 
-if __name__ == "__main__":
-    import uvicorn
-    uvicorn.run(app, host="0.0.0.0", port=8080)
+# Remove or comment out the uvicorn.run() block for Render deployment
+# if __name__ == "__main__":
+#     import uvicorn
+#     uvicorn.run(app, host="0.0.0.0", port=8080)
