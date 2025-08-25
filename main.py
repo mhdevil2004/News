@@ -2,32 +2,59 @@ import os
 import requests
 import json
 from datetime import datetime, timedelta
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, BackgroundTasks
 from pydantic import BaseModel
 from typing import Optional
 import psycopg2
 from psycopg2.extras import RealDictCursor
+from fastapi.middleware.cors import CORSMiddleware
 
-# Database connection function - with environment variables for Render
+# Initialize FastAPI app
+app = FastAPI()
+
+# Add CORS middleware to allow frontend requests
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],  # Allows all origins
+    allow_credentials=True,
+    allow_methods=["*"],  # Allows all methods
+    allow_headers=["*"],  # Allows all headers
+)
+
+# Database connection function - UPDATED FOR RENDER + SUPABASE
 def get_db_connection():
     try:
-        # Use environment variables for Render deployment
-        db_host = os.getenv("DB_HOST", "db.cyniazclgdffjcjhneau.supabase.co")
-        db_name = os.getenv("DB_NAME", "postgres")
-        db_user = os.getenv("DB_USER", "postgres")
-        db_password = os.getenv("DB_PASSWORD", "Harish@Harini")
-        db_port = os.getenv("DB_PORT", "5432")
+        # Use connection pooling URL (preferred for Render)
+        connection_string = os.getenv("DATABASE_URL")
         
-        print(f"Connecting to: {db_host} with user: {db_user}")
+        if connection_string:
+            # For Render deployment with connection pooling
+            conn = psycopg2.connect(
+                connection_string,
+                sslmode="require",
+                cursor_factory=RealDictCursor
+            )
+            print("Connected using DATABASE_URL connection string")
+        else:
+            # Fallback to individual parameters (for local testing)
+            db_host = os.getenv("DB_HOST", "db.cyniazclgdffjcjhneau.supabase.co")
+            db_name = os.getenv("DB_NAME", "postgres")
+            db_user = os.getenv("DB_USER", "postgres")
+            db_password = os.getenv("DB_PASSWORD", "Harish@Harini")
+            db_port = os.getenv("DB_PORT", "6543")  # Use 6543 for connection pooling
+            
+            print(f"Connecting to: {db_host} with user: {db_user}")
+            
+            conn = psycopg2.connect(
+                host=db_host,
+                database=db_name,
+                user=db_user,
+                password=db_password,
+                port=db_port,
+                sslmode="require",  # SSL is REQUIRED for Supabase
+                cursor_factory=RealDictCursor
+            )
         
-        conn = psycopg2.connect(
-            host=db_host,
-            database=db_name,
-            user=db_user,
-            password=db_password,
-            port=db_port,
-            cursor_factory=RealDictCursor
-        )
         print("Database connection successful!")
         return conn
     except Exception as e:
@@ -37,8 +64,6 @@ def get_db_connection():
 class TopicRequest(BaseModel):
     topic: str
     days_back: int = 3  # Optional with default value
-
-app = FastAPI()
 
 # Your existing endpoints
 @app.get("/")
@@ -157,7 +182,7 @@ def store_in_supabase(topic, articles):
 
 # NEW ENDPOINT: News Summarization
 @app.post("/summarize-news", response_model=NewsResponse)
-async def summarize_news(request: NewsRequest):
+async def summarize_news(request: NewsRequest, background_tasks: BackgroundTasks):
     """Generate news summary for a given topic"""
     try:
         # Search for news
@@ -176,9 +201,8 @@ async def summarize_news(request: NewsRequest):
             }
             articles.append(article)
         
-        # Store results in Supabase
-        storage_success = store_in_supabase(request.topic, articles)
-        print(f"Database storage status: {storage_success}")
+        # Store results in Supabase in background to avoid blocking
+        background_tasks.add_task(store_in_supabase, request.topic, articles)
         
         # Generate summary using manual analysis
         summary = manual_analysis(articles, request.topic)
@@ -195,7 +219,7 @@ async def summarize_news(request: NewsRequest):
 
 # NEW ENDPOINT: Quick news search
 @app.get("/search-news/{topic}")
-async def search_news_endpoint(topic: str, days_back: int = 3):
+async def search_news_endpoint(topic: str, days_back: int = 3, background_tasks: BackgroundTasks = None):
     """Search for news articles only"""
     try:
         search_results = search_news(topic, days_back)
@@ -213,9 +237,11 @@ async def search_news_endpoint(topic: str, days_back: int = 3):
             }
             articles.append(article)
         
-        # Store results in Supabase
-        storage_success = store_in_supabase(topic, articles)
-        print(f"Database storage status: {storage_success}")
+        # Store results in Supabase in background
+        if background_tasks:
+            background_tasks.add_task(store_in_supabase, topic, articles)
+        else:
+            store_in_supabase(topic, articles)
         
         return {
             "topic": topic,
@@ -236,7 +262,7 @@ async def get_search_history():
     
     try:
         cur = conn.cursor()
-        cur.execute("SELECT * FROM news_searches ORDER BY search_timestamp DESC")
+        cur.execute("SELECT * FROM news_searches ORDER BY search_timestamp DESC LIMIT 20")
         results = cur.fetchall()
         cur.close()
         conn.close()
@@ -295,3 +321,25 @@ async def health_check():
             "GET /health": "Health check"
         }
     }
+
+# NEW ENDPOINT: Clear search history (for testing)
+@app.delete("/clear-history")
+async def clear_history():
+    """Clear all search history (for testing purposes)"""
+    conn = get_db_connection()
+    if not conn:
+        raise HTTPException(status_code=500, detail="Database connection failed")
+    
+    try:
+        cur = conn.cursor()
+        cur.execute("DELETE FROM news_searches")
+        conn.commit()
+        cur.close()
+        conn.close()
+        
+        return {"status": "success", "message": "Search history cleared"}
+        
+    except Exception as e:
+        if conn:
+            conn.close()
+        raise HTTPException(status_code=500, detail=f"Database error: {str(e)}")
