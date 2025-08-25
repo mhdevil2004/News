@@ -21,39 +21,27 @@ app.add_middleware(
     allow_headers=["*"],  # Allows all headers
 )
 
-# Database connection function - UPDATED FOR RENDER + SUPABASE
+# Database connection function - SIMPLIFIED FOR SUPABASE
 def get_db_connection():
     try:
-        # Use connection pooling URL (preferred for Render)
-        connection_string = os.getenv("DATABASE_URL")
+        # Use direct Supabase connection (more reliable)
+        db_host = os.getenv("DB_HOST", "db.cyniazclgdffjcjhneau.supabase.co")
+        db_name = os.getenv("DB_NAME", "postgres")
+        db_user = os.getenv("DB_USER", "postgres")
+        db_password = os.getenv("DB_PASSWORD", "Harish@Harini")
+        db_port = os.getenv("DB_PORT", "5432")  # Standard PostgreSQL port
         
-        if connection_string:
-            # For Render deployment with connection pooling
-            conn = psycopg2.connect(
-                connection_string,
-                sslmode="require",
-                cursor_factory=RealDictCursor
-            )
-            print("Connected using DATABASE_URL connection string")
-        else:
-            # Fallback to individual parameters (for local testing)
-            db_host = os.getenv("DB_HOST", "db.cyniazclgdffjcjhneau.supabase.co")
-            db_name = os.getenv("DB_NAME", "postgres")
-            db_user = os.getenv("DB_USER", "postgres")
-            db_password = os.getenv("DB_PASSWORD", "Harish@Harini")
-            db_port = os.getenv("DB_PORT", "6543")  # Use 6543 for connection pooling
-            
-            print(f"Connecting to: {db_host} with user: {db_user}")
-            
-            conn = psycopg2.connect(
-                host=db_host,
-                database=db_name,
-                user=db_user,
-                password=db_password,
-                port=db_port,
-                sslmode="require",  # SSL is REQUIRED for Supabase
-                cursor_factory=RealDictCursor
-            )
+        print(f"Connecting to Supabase: {db_host} with user: {db_user}")
+        
+        conn = psycopg2.connect(
+            host=db_host,
+            database=db_name,
+            user=db_user,
+            password=db_password,
+            port=db_port,
+            sslmode="require",  # SSL is REQUIRED for Supabase
+            cursor_factory=RealDictCursor
+        )
         
         print("Database connection successful!")
         return conn
@@ -74,7 +62,7 @@ def read_root():
 def predict(input_data: str):
     return {"prediction": input_data}
 
-# ======== NEW NEWS SUMMARIZATION ENDPOINTS ========
+# ======== NEWS SUMMARIZATION ENDPOINTS ========
 
 # Request model for news summarization
 class NewsRequest(BaseModel):
@@ -150,16 +138,22 @@ def store_in_supabase(topic, articles):
     try:
         cur = conn.cursor()
         
-        # Create table if it doesn't exist
-        cur.execute("""
-            CREATE TABLE IF NOT EXISTS news_searches (
-                id SERIAL PRIMARY KEY,
-                topic VARCHAR(255) NOT NULL,
-                search_timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                articles_found INTEGER,
-                articles JSONB
-            )
-        """)
+        # Create table if it doesn't exist (with error handling)
+        try:
+            cur.execute("""
+                CREATE TABLE IF NOT EXISTS news_searches (
+                    id SERIAL PRIMARY KEY,
+                    topic VARCHAR(255) NOT NULL,
+                    search_timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    articles_found INTEGER,
+                    articles JSONB
+                )
+            """)
+            conn.commit()
+            print("Table created or already exists")
+        except Exception as e:
+            print(f"Table creation warning: {e}")
+            conn.rollback()
         
         # Insert the search results
         cur.execute(
@@ -177,6 +171,7 @@ def store_in_supabase(topic, articles):
     except Exception as e:
         print(f"Database error: {e}")
         if conn:
+            conn.rollback()
             conn.close()
         return False
 
@@ -219,7 +214,7 @@ async def summarize_news(request: NewsRequest, background_tasks: BackgroundTasks
 
 # NEW ENDPOINT: Quick news search
 @app.get("/search-news/{topic}")
-async def search_news_endpoint(topic: str, days_back: int = 3, background_tasks: BackgroundTasks = None):
+async def search_news_endpoint(topic: str, days_back: int = 3):
     """Search for news articles only"""
     try:
         search_results = search_news(topic, days_back)
@@ -237,15 +232,13 @@ async def search_news_endpoint(topic: str, days_back: int = 3, background_tasks:
             }
             articles.append(article)
         
-        # Store results in Supabase in background
-        if background_tasks:
-            background_tasks.add_task(store_in_supabase, topic, articles)
-        else:
-            store_in_supabase(topic, articles)
+        # Store results in Supabase (synchronous to ensure it happens)
+        storage_success = store_in_supabase(topic, articles)
         
         return {
             "topic": topic,
             "articles_found": len(articles),
+            "storage_success": storage_success,
             "articles": articles
         }
         
