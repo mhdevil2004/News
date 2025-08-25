@@ -8,15 +8,22 @@ from typing import Optional
 import psycopg2
 from psycopg2.extras import RealDictCursor
 
-# Database connection function
+# Database connection function - with environment variables for Render
 def get_db_connection():
     try:
+        # Use environment variables for Render deployment
+        db_host = os.getenv("DB_HOST", "db.cyniazclgdffjcjhneau.supabase.co")
+        db_name = os.getenv("DB_NAME", "postgres")
+        db_user = os.getenv("DB_USER", "postgres")
+        db_password = os.getenv("DB_PASSWORD", "Harish@Harini")
+        db_port = os.getenv("DB_PORT", "5432")
+        
         conn = psycopg2.connect(
-            host="db.cyniazclgdffjcjhneau.supabase.co",
-            database="postgres",
-            user="postgres",
-            password="Harish@Harini",
-            port="5432",
+            host=db_host,
+            database=db_name,
+            user=db_user,
+            password=db_password,
+            port=db_port,
             cursor_factory=RealDictCursor
         )
         return conn
@@ -33,7 +40,7 @@ app = FastAPI()
 # Your existing endpoints
 @app.get("/")
 def read_root():
-    return {"message": "Hello World"}
+    return {"message": "Hello World - News API is working!"}
 
 @app.post("/predict")
 def predict(input_data: str):
@@ -54,8 +61,8 @@ class NewsResponse(BaseModel):
     articles_found: int
     topic: str
 
-# Set up API keys
-SERPER_API_KEY = "994cc60dc5f8832509cd540db1c3e00c6df41a99"
+# Set up API keys - use environment variable for security
+SERPER_API_KEY = os.getenv("SERPER_API_KEY", "994cc60dc5f8832509cd540db1c3e00c6df41a99")
 
 def search_news(query, days_back=7):
     """Search for recent news using Serper API"""
@@ -251,6 +258,4 @@ async def health_check():
         }
     }
 
-if __name__ == "__main__":
-    import uvicorn
-    uvicorn.run(app, host="0.0.0.0", port=8000)
+# No uvicorn.run() needed for Render deployment
