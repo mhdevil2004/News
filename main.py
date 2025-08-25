@@ -5,8 +5,7 @@ from datetime import datetime, timedelta
 from fastapi import FastAPI, HTTPException, BackgroundTasks
 from pydantic import BaseModel
 from typing import Optional
-import psycopg2
-from psycopg2.extras import RealDictCursor
+from supabase import create_client, Client
 from fastapi.middleware.cors import CORSMiddleware
 
 # Initialize FastAPI app
@@ -21,33 +20,11 @@ app.add_middleware(
     allow_headers=["*"],  # Allows all headers
 )
 
-# Database connection function - SIMPLIFIED FOR SUPABASE
-def get_db_connection():
-    try:
-        # Use direct Supabase connection (more reliable)
-        db_host = os.getenv("DB_HOST", "db.cyniazclgdffjcjhneau.supabase.co")
-        db_name = os.getenv("DB_NAME", "postgres")
-        db_user = os.getenv("DB_USER", "postgres")
-        db_password = os.getenv("DB_PASSWORD", "Harish@Harini")
-        db_port = os.getenv("DB_PORT", "5432")  # Standard PostgreSQL port
-        
-        print(f"Connecting to Supabase: {db_host} with user: {db_user}")
-        
-        conn = psycopg2.connect(
-            host=db_host,
-            database=db_name,
-            user=db_user,
-            password=db_password,
-            port=db_port,
-            sslmode="require",  # SSL is REQUIRED for Supabase
-            cursor_factory=RealDictCursor
-        )
-        
-        print("Database connection successful!")
-        return conn
-    except Exception as e:
-        print(f"Database connection error: {e}")
-        return None
+# Initialize Supabase client
+supabase_url = "https://cyniazclgdffjcjhneau.supabase.co"
+supabase_key = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImN5bmlhemNsZ2RmZmpjamhuZWF1Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3NTYxMTk2MzAsImV4cCI6MjA3MTY5NTYzMH0.QitglJD_9AfzBhB6OMD4LbVUOBurpTh9CFA4r0wQ_Vk"
+
+supabase: Client = create_client(supabase_url, supabase_key)
 
 class TopicRequest(BaseModel):
     topic: str
@@ -127,53 +104,39 @@ Found {len(articles)} recent articles about {topic}.
     return analysis
 
 def store_in_supabase(topic, articles):
-    """Store search results in Supabase database"""
+    """Store search results in Supabase database using the Supabase client"""
     print(f"Attempting to store {len(articles)} articles for topic: {topic}")
     
-    conn = get_db_connection()
-    if not conn:
-        print("Failed to connect to database")
-        return False
-    
     try:
-        cur = conn.cursor()
+        # Insert the search results using Supabase client
+        data, count = supabase.table("news_searches").insert({
+            "topic": topic,
+            "articles_found": len(articles),
+            "articles": articles
+        }).execute()
         
-        # Create table if it doesn't exist (with error handling)
-        try:
-            cur.execute("""
-                CREATE TABLE IF NOT EXISTS news_searches (
-                    id SERIAL PRIMARY KEY,
-                    topic VARCHAR(255) NOT NULL,
-                    search_timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                    articles_found INTEGER,
-                    articles JSONB
-                )
-            """)
-            conn.commit()
-            print("Table created or already exists")
-        except Exception as e:
-            print(f"Table creation warning: {e}")
-            conn.rollback()
-        
-        # Insert the search results
-        cur.execute(
-            "INSERT INTO news_searches (topic, articles_found, articles) VALUES (%s, %s, %s)",
-            (topic, len(articles), json.dumps(articles))
-        )
-        
-        conn.commit()
-        cur.close()
-        conn.close()
-        
-        print(f"Successfully stored {len(articles)} articles in database!")
+        print(f"Successfully stored {len(articles)} articles in Supabase!")
         return True
         
     except Exception as e:
-        print(f"Database error: {e}")
-        if conn:
-            conn.rollback()
-            conn.close()
-        return False
+        print(f"Supabase error: {e}")
+        # If table doesn't exist, create it and try again
+        try:
+            # Create the table using the Supabase SQL editor functionality
+            # Note: You might need to create this table manually in the Supabase dashboard
+            # or use the SQL editor to run:
+            # CREATE TABLE news_searches (
+            #   id SERIAL PRIMARY KEY,
+            #   topic VARCHAR(255) NOT NULL,
+            #   search_timestamp TIMESTAMP DEFAULT NOW(),
+            #   articles_found INTEGER,
+            #   articles JSONB
+            # );
+            print("Table might not exist. Please create it in Supabase dashboard.")
+            return False
+        except Exception as e2:
+            print(f"Failed to create table: {e2}")
+            return False
 
 # NEW ENDPOINT: News Summarization
 @app.post("/summarize-news", response_model=NewsResponse)
@@ -249,57 +212,38 @@ async def search_news_endpoint(topic: str, days_back: int = 3):
 @app.get("/search-history")
 async def get_search_history():
     """Get all previous search results from database"""
-    conn = get_db_connection()
-    if not conn:
-        raise HTTPException(status_code=500, detail="Database connection failed")
-    
     try:
-        cur = conn.cursor()
-        cur.execute("SELECT * FROM news_searches ORDER BY search_timestamp DESC LIMIT 20")
-        results = cur.fetchall()
-        cur.close()
-        conn.close()
-        
-        return {"history": results}
+        # Use Supabase client to fetch data
+        response = supabase.table("news_searches").select("*").order("search_timestamp", desc=True).limit(20).execute()
+        return {"history": response.data}
         
     except Exception as e:
-        if conn:
-            conn.close()
-        raise HTTPException(status_code=500, detail=f"Database error: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Supabase error: {str(e)}")
 
 # NEW ENDPOINT: Debug database connection
 @app.get("/debug-db")
 async def debug_db():
     """Check database connection status"""
     try:
-        conn = get_db_connection()
-        if conn:
-            try:
-                cur = conn.cursor()
-                cur.execute("SELECT NOW() as current_time, version() as db_version")
-                result = cur.fetchone()
-                cur.close()
-                conn.close()
-                return {
-                    "status": "connected", 
-                    "database_time": result["current_time"],
-                    "version": result["db_version"]
-                }
-            except Exception as e:
-                return {"status": "connected but query failed", "error": str(e)}
-        else:
-            return {"status": "disconnected", "error": "Failed to connect to database"}
+        # Test Supabase connection by making a simple query
+        response = supabase.table("news_searches").select("count", count="exact").execute()
+        return {
+            "status": "connected", 
+            "supabase_url": supabase_url,
+            "table_count": response.count
+        }
     except Exception as e:
         return {"status": "error", "error": str(e)}
 
 # NEW ENDPOINT: Health check with news API status
 @app.get("/health")
 async def health_check():
-    # Test database connection
-    db_conn = get_db_connection()
-    db_status = "connected" if db_conn else "disconnected"
-    if db_conn:
-        db_conn.close()
+    # Test Supabase connection
+    try:
+        response = supabase.table("news_searches").select("count", count="exact").limit(1).execute()
+        db_status = "connected"
+    except Exception as e:
+        db_status = f"disconnected: {str(e)}"
     
     return {
         "status": "healthy", 
@@ -319,20 +263,10 @@ async def health_check():
 @app.delete("/clear-history")
 async def clear_history():
     """Clear all search history (for testing purposes)"""
-    conn = get_db_connection()
-    if not conn:
-        raise HTTPException(status_code=500, detail="Database connection failed")
-    
     try:
-        cur = conn.cursor()
-        cur.execute("DELETE FROM news_searches")
-        conn.commit()
-        cur.close()
-        conn.close()
-        
-        return {"status": "success", "message": "Search history cleared"}
+        # Delete all records from the table
+        response = supabase.table("news_searches").delete().neq("id", "0").execute()
+        return {"status": "success", "message": f"Deleted {len(response.data)} records"}
         
     except Exception as e:
-        if conn:
-            conn.close()
-        raise HTTPException(status_code=500, detail=f"Database error: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Supabase error: {str(e)}")
