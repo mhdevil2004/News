@@ -18,6 +18,8 @@ def get_db_connection():
         db_password = os.getenv("DB_PASSWORD", "Harish@Harini")
         db_port = os.getenv("DB_PORT", "5432")
         
+        print(f"Connecting to: {db_host} with user: {db_user}")
+        
         conn = psycopg2.connect(
             host=db_host,
             database=db_name,
@@ -26,6 +28,7 @@ def get_db_connection():
             port=db_port,
             cursor_factory=RealDictCursor
         )
+        print("Database connection successful!")
         return conn
     except Exception as e:
         print(f"Database connection error: {e}")
@@ -112,6 +115,8 @@ Found {len(articles)} recent articles about {topic}.
 
 def store_in_supabase(topic, articles):
     """Store search results in Supabase database"""
+    print(f"Attempting to store {len(articles)} articles for topic: {topic}")
+    
     conn = get_db_connection()
     if not conn:
         print("Failed to connect to database")
@@ -140,6 +145,8 @@ def store_in_supabase(topic, articles):
         conn.commit()
         cur.close()
         conn.close()
+        
+        print(f"Successfully stored {len(articles)} articles in database!")
         return True
         
     except Exception as e:
@@ -170,7 +177,8 @@ async def summarize_news(request: NewsRequest):
             articles.append(article)
         
         # Store results in Supabase
-        store_in_supabase(request.topic, articles)
+        storage_success = store_in_supabase(request.topic, articles)
+        print(f"Database storage status: {storage_success}")
         
         # Generate summary using manual analysis
         summary = manual_analysis(articles, request.topic)
@@ -206,7 +214,8 @@ async def search_news_endpoint(topic: str, days_back: int = 3):
             articles.append(article)
         
         # Store results in Supabase
-        store_in_supabase(topic, articles)
+        storage_success = store_in_supabase(topic, articles)
+        print(f"Database storage status: {storage_success}")
         
         return {
             "topic": topic,
@@ -239,11 +248,39 @@ async def get_search_history():
             conn.close()
         raise HTTPException(status_code=500, detail=f"Database error: {str(e)}")
 
+# NEW ENDPOINT: Debug database connection
+@app.get("/debug-db")
+async def debug_db():
+    """Check database connection status"""
+    try:
+        conn = get_db_connection()
+        if conn:
+            try:
+                cur = conn.cursor()
+                cur.execute("SELECT NOW() as current_time, version() as db_version")
+                result = cur.fetchone()
+                cur.close()
+                conn.close()
+                return {
+                    "status": "connected", 
+                    "database_time": result["current_time"],
+                    "version": result["db_version"]
+                }
+            except Exception as e:
+                return {"status": "connected but query failed", "error": str(e)}
+        else:
+            return {"status": "disconnected", "error": "Failed to connect to database"}
+    except Exception as e:
+        return {"status": "error", "error": str(e)}
+
 # NEW ENDPOINT: Health check with news API status
 @app.get("/health")
 async def health_check():
     # Test database connection
-    db_status = "connected" if get_db_connection() else "disconnected"
+    db_conn = get_db_connection()
+    db_status = "connected" if db_conn else "disconnected"
+    if db_conn:
+        db_conn.close()
     
     return {
         "status": "healthy", 
@@ -254,8 +291,7 @@ async def health_check():
             "POST /summarize-news": "News summarization",
             "GET /search-news/{topic}": "News search",
             "GET /search-history": "View search history",
+            "GET /debug-db": "Debug database connection",
             "GET /health": "Health check"
         }
     }
-
-# No uvicorn.run() needed for Render deployment
