@@ -5,6 +5,24 @@ from datetime import datetime, timedelta
 from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel
 from typing import Optional
+import psycopg2
+from psycopg2.extras import RealDictCursor
+
+# Database connection function
+def get_db_connection():
+    try:
+        conn = psycopg2.connect(
+            host="db.cyniazclgdffjcjhneau.supabase.co",
+            database="postgres",
+            user="postgres",
+            password="Harish@Harini",
+            port="5432",
+            cursor_factory=RealDictCursor
+        )
+        return conn
+    except Exception as e:
+        print(f"Database connection error: {e}")
+        return None
 
 class TopicRequest(BaseModel):
     topic: str
@@ -85,6 +103,44 @@ Found {len(articles)} recent articles about {topic}.
     
     return analysis
 
+def store_in_supabase(topic, articles):
+    """Store search results in Supabase database"""
+    conn = get_db_connection()
+    if not conn:
+        print("Failed to connect to database")
+        return False
+    
+    try:
+        cur = conn.cursor()
+        
+        # Create table if it doesn't exist
+        cur.execute("""
+            CREATE TABLE IF NOT EXISTS news_searches (
+                id SERIAL PRIMARY KEY,
+                topic VARCHAR(255) NOT NULL,
+                search_timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                articles_found INTEGER,
+                articles JSONB
+            )
+        """)
+        
+        # Insert the search results
+        cur.execute(
+            "INSERT INTO news_searches (topic, articles_found, articles) VALUES (%s, %s, %s)",
+            (topic, len(articles), json.dumps(articles))
+        )
+        
+        conn.commit()
+        cur.close()
+        conn.close()
+        return True
+        
+    except Exception as e:
+        print(f"Database error: {e}")
+        if conn:
+            conn.close()
+        return False
+
 # NEW ENDPOINT: News Summarization
 @app.post("/summarize-news", response_model=NewsResponse)
 async def summarize_news(request: NewsRequest):
@@ -106,7 +162,10 @@ async def summarize_news(request: NewsRequest):
             }
             articles.append(article)
         
-        # Generate summary using manual analysis (since OpenAI key needs fix)
+        # Store results in Supabase
+        store_in_supabase(request.topic, articles)
+        
+        # Generate summary using manual analysis
         summary = manual_analysis(articles, request.topic)
         
         return NewsResponse(
@@ -139,6 +198,9 @@ async def search_news_endpoint(topic: str, days_back: int = 3):
             }
             articles.append(article)
         
+        # Store results in Supabase
+        store_in_supabase(topic, articles)
+        
         return {
             "topic": topic,
             "articles_found": len(articles),
@@ -148,21 +210,47 @@ async def search_news_endpoint(topic: str, days_back: int = 3):
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Search error: {str(e)}")
 
+# NEW ENDPOINT: Get search history from Supabase
+@app.get("/search-history")
+async def get_search_history():
+    """Get all previous search results from database"""
+    conn = get_db_connection()
+    if not conn:
+        raise HTTPException(status_code=500, detail="Database connection failed")
+    
+    try:
+        cur = conn.cursor()
+        cur.execute("SELECT * FROM news_searches ORDER BY search_timestamp DESC")
+        results = cur.fetchall()
+        cur.close()
+        conn.close()
+        
+        return {"history": results}
+        
+    except Exception as e:
+        if conn:
+            conn.close()
+        raise HTTPException(status_code=500, detail=f"Database error: {str(e)}")
+
 # NEW ENDPOINT: Health check with news API status
 @app.get("/health")
 async def health_check():
+    # Test database connection
+    db_status = "connected" if get_db_connection() else "disconnected"
+    
     return {
         "status": "healthy", 
+        "database": db_status,
         "endpoints": {
             "GET /": "Root endpoint",
             "POST /predict": "Prediction endpoint",
             "POST /summarize-news": "News summarization",
             "GET /search-news/{topic}": "News search",
+            "GET /search-history": "View search history",
             "GET /health": "Health check"
         }
     }
 
-# Remove or comment out the uvicorn.run() block for Render deployment
-# if __name__ == "__main__":
-#     import uvicorn
-#     uvicorn.run(app, host="0.0.0.0", port=8080)
+if __name__ == "__main__":
+    import uvicorn
+    uvicorn.run(app, host="0.0.0.0", port=8000)
