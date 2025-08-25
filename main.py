@@ -5,7 +5,6 @@ from datetime import datetime, timedelta
 from fastapi import FastAPI, HTTPException, BackgroundTasks
 from pydantic import BaseModel
 from typing import Optional
-from supabase import create_client, Client
 from fastapi.middleware.cors import CORSMiddleware
 
 # Initialize FastAPI app
@@ -20,11 +19,16 @@ app.add_middleware(
     allow_headers=["*"],  # Allows all headers
 )
 
-# Initialize Supabase client
-supabase_url = "https://cyniazclgdffjcjhneau.supabase.co"
-supabase_key = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImN5bmlhemNsZ2RmZmpjamhuZWF1Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3NTYxMTk2MzAsImV4cCI6MjA3MTY5NTYzMH0.QitglJD_9AfzBhB6OMD4LbVUOBurpTh9CFA4r0wQ_Vk"
+# Supabase configuration
+SUPABASE_URL = "https://cyniazclgdffjcjhneau.supabase.co"
+SUPABASE_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImN5bmlhemNsZ2RmZmpjamhuZWF1Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3NTYxMTk2MzAsImV4cCI6MjA3MTY5NTYzMH0.QitglJD_9AfzBhB6OMD4LbVUOBurpTh9CFA4r0wQ_Vk"
 
-supabase: Client = create_client(supabase_url, supabase_key)
+# Headers for Supabase API requests
+supabase_headers = {
+    "apikey": SUPABASE_KEY,
+    "Authorization": f"Bearer {SUPABASE_KEY}",
+    "Content-Type": "application/json"
+}
 
 class TopicRequest(BaseModel):
     topic: str
@@ -104,39 +108,74 @@ Found {len(articles)} recent articles about {topic}.
     return analysis
 
 def store_in_supabase(topic, articles):
-    """Store search results in Supabase database using the Supabase client"""
+    """Store search results in Supabase database using REST API"""
     print(f"Attempting to store {len(articles)} articles for topic: {topic}")
     
     try:
-        # Insert the search results using Supabase client
-        data, count = supabase.table("news_searches").insert({
+        # Prepare the data for insertion
+        data = {
             "topic": topic,
             "articles_found": len(articles),
             "articles": articles
-        }).execute()
+        }
         
-        print(f"Successfully stored {len(articles)} articles in Supabase!")
-        return True
+        # Make the API request to Supabase
+        response = requests.post(
+            f"{SUPABASE_URL}/rest/v1/news_searches",
+            headers=supabase_headers,
+            json=data
+        )
+        
+        if response.status_code == 201:
+            print(f"Successfully stored {len(articles)} articles in Supabase!")
+            return True
+        else:
+            print(f"Supabase API error: {response.status_code} - {response.text}")
+            
+            # If table doesn't exist, try to create it
+            if response.status_code == 404:
+                print("Table might not exist. Creating it now...")
+                create_table_success = create_supabase_table()
+                if create_table_success:
+                    # Retry the insertion
+                    response = requests.post(
+                        f"{SUPABASE_URL}/rest/v1/news_searches",
+                        headers=supabase_headers,
+                        json=data
+                    )
+                    if response.status_code == 201:
+                        print(f"Successfully stored after creating table!")
+                        return True
+            
+            return False
         
     except Exception as e:
-        print(f"Supabase error: {e}")
-        # If table doesn't exist, create it and try again
-        try:
-            # Create the table using the Supabase SQL editor functionality
-            # Note: You might need to create this table manually in the Supabase dashboard
-            # or use the SQL editor to run:
-            # CREATE TABLE news_searches (
-            #   id SERIAL PRIMARY KEY,
-            #   topic VARCHAR(255) NOT NULL,
-            #   search_timestamp TIMESTAMP DEFAULT NOW(),
-            #   articles_found INTEGER,
-            #   articles JSONB
-            # );
-            print("Table might not exist. Please create it in Supabase dashboard.")
-            return False
-        except Exception as e2:
-            print(f"Failed to create table: {e2}")
-            return False
+        print(f"Supabase API error: {e}")
+        return False
+
+def create_supabase_table():
+    """Create the news_searches table in Supabase using the SQL API"""
+    try:
+        # This requires the service_role key, which has more permissions
+        # For security, you should create the table manually in the Supabase dashboard
+        
+        print("Please create the 'news_searches' table manually in Supabase dashboard.")
+        print("You can use this SQL:")
+        print("""
+        CREATE TABLE news_searches (
+            id SERIAL PRIMARY KEY,
+            topic VARCHAR(255) NOT NULL,
+            search_timestamp TIMESTAMPTZ DEFAULT NOW(),
+            articles_found INTEGER,
+            articles JSONB
+        );
+        """)
+        
+        return False
+        
+    except Exception as e:
+        print(f"Table creation error: {e}")
+        return False
 
 # NEW ENDPOINT: News Summarization
 @app.post("/summarize-news", response_model=NewsResponse)
@@ -213,12 +252,19 @@ async def search_news_endpoint(topic: str, days_back: int = 3):
 async def get_search_history():
     """Get all previous search results from database"""
     try:
-        # Use Supabase client to fetch data
-        response = supabase.table("news_searches").select("*").order("search_timestamp", desc=True).limit(20).execute()
-        return {"history": response.data}
+        # Use Supabase REST API to fetch data
+        response = requests.get(
+            f"{SUPABASE_URL}/rest/v1/news_searches?select=*&order=search_timestamp.desc&limit=20",
+            headers=supabase_headers
+        )
+        
+        if response.status_code == 200:
+            return {"history": response.json()}
+        else:
+            return {"history": [], "error": f"API returned {response.status_code}"}
         
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Supabase error: {str(e)}")
+        return {"history": [], "error": str(e)}
 
 # NEW ENDPOINT: Debug database connection
 @app.get("/debug-db")
@@ -226,12 +272,24 @@ async def debug_db():
     """Check database connection status"""
     try:
         # Test Supabase connection by making a simple query
-        response = supabase.table("news_searches").select("count", count="exact").execute()
-        return {
-            "status": "connected", 
-            "supabase_url": supabase_url,
-            "table_count": response.count
-        }
+        response = requests.get(
+            f"{SUPABASE_URL}/rest/v1/news_searches?select=count",
+            headers=supabase_headers
+        )
+        
+        if response.status_code == 200:
+            return {
+                "status": "connected", 
+                "supabase_url": SUPABASE_URL,
+                "table_exists": True
+            }
+        else:
+            return {
+                "status": "connected but table might not exist", 
+                "supabase_url": SUPABASE_URL,
+                "table_exists": False,
+                "error": f"HTTP {response.status_code}"
+            }
     except Exception as e:
         return {"status": "error", "error": str(e)}
 
@@ -240,8 +298,11 @@ async def debug_db():
 async def health_check():
     # Test Supabase connection
     try:
-        response = supabase.table("news_searches").select("count", count="exact").limit(1).execute()
-        db_status = "connected"
+        response = requests.get(
+            f"{SUPABASE_URL}/rest/v1/news_searches?select=count",
+            headers=supabase_headers
+        )
+        db_status = "connected" if response.status_code == 200 else f"connected but table might not exist ({response.status_code})"
     except Exception as e:
         db_status = f"disconnected: {str(e)}"
     
@@ -264,9 +325,16 @@ async def health_check():
 async def clear_history():
     """Clear all search history (for testing purposes)"""
     try:
-        # Delete all records from the table
-        response = supabase.table("news_searches").delete().neq("id", "0").execute()
-        return {"status": "success", "message": f"Deleted {len(response.data)} records"}
+        # Delete all records from the table using Supabase API
+        response = requests.delete(
+            f"{SUPABASE_URL}/rest/v1/news_searches",
+            headers=supabase_headers
+        )
+        
+        if response.status_code == 204:
+            return {"status": "success", "message": "All records deleted"}
+        else:
+            return {"status": "error", "message": f"API returned {response.status_code}"}
         
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Supabase error: {str(e)}")
+        return {"status": "error", "message": str(e)}
